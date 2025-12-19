@@ -1,25 +1,26 @@
 #ifndef CONN_ENGINE_HPP
 #define CONN_ENGINE_HPP
 
-#include <stdint.h>
+#include <netinet/in.h>
 
-#include <string>
 #include <unordered_set>
 #include <unordered_map>
 
-#include <hash_ring.hpp>
+#include "hash_ring.hpp"
 
 
 class ConnectionEngine {
 private:
-    int epoll_fd;
-    int lis_unix_sock;
-    int lis_inet_sock;
+    int epoll_fd_;
+    int listen_unix_socket_;
+    int listen_inet_socket_;
 
-    std::unordered_set<int> open_sockets;
-    std::unordered_map<int, int> forward;
+    std::unordered_set<int> open_sockets_;
+    std::unordered_map<int, int> forward_;
 
-    HashRing hash_ring;
+    int servers_limit_;
+
+    HashRing hash_ring_;
 
 public:
     ConnectionEngine();
@@ -27,11 +28,11 @@ public:
 private:
     void handle_ctl();
     void handle_connect();
-    void handle_disconnect(int fd);
-    void handle_traffic(int in_fd);
+    void handle_disconnect(int in_sock);
+    void handle_traffic(int in_sock);
 
 public:
-    int setup(std::string unix_address, uint32_t inet_address, uint16_t inet_port);
+    int setup(in_addr_t inet_address, in_port_t inet_port, int servers_limit);
     void run();
     void cleanup();
 };

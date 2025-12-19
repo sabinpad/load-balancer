@@ -5,7 +5,7 @@
 #include "utils/ipc_utils.hpp"
 
 
-int listening_unix_socket(std::string unix_address, int n)
+int listening_unix_socket(const char *unix_address, int n)
 {
     int rc;
     int fd = -1;
@@ -19,9 +19,9 @@ int listening_unix_socket(std::string unix_address, int n)
     memset(&addr_info, 0, sizeof(addr_info));
     addr_info.sun_family = AF_UNIX;
     addr_info.sun_path[0] = '\0';
-    strcpy(addr_info.sun_path + 1, unix_address.c_str());
+    strcpy(addr_info.sun_path + 1, unix_address);
     
-    rc = bind(fd, (const struct sockaddr *)&addr_info, sizeof(addr_info.sun_family) + 1 + unix_address.length());
+    rc = bind(fd, (const struct sockaddr *)&addr_info, sizeof(addr_info.sun_family) + 1 + strlen(unix_address));
 
     if (rc == -1) {
         close(fd);

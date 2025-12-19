@@ -6,6 +6,6 @@
 #include <ipc.h>
 
 
-int listening_unix_socket(std::string unix_address, int n);
+int listening_unix_socket(const char *unix_address, int n);
 
 #endif /* ipc_utils.hpp */

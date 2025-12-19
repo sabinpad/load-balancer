@@ -1,21 +1,21 @@
 #ifndef HASH_RING_HPP
 #define HASH_RING_HPP
 
-#include <stdint.h>
+#include <cstdint>
+#include <netinet/in.h>
 
 #include <vector>
 #include <unordered_map>
 
 
-typedef unsigned long ring_id_t;
-
+using RingId = std::uint64_t;
 
 struct Endpoint {
-    uint32_t address;
-    uint16_t port;
+    in_addr_t address;
+    in_port_t port;
 
     Endpoint();
-    Endpoint(uint32_t address, uint16_t port);
+    Endpoint(in_addr_t address, in_port_t port);
 
     bool operator==(const Endpoint &other) const;
 };
@@ -28,36 +28,34 @@ namespace std {
 }
 
 struct HashNode {
-    ring_id_t id;
-    std::size_t hash;
+    RingId id;
+    std::size_t label_hash;
 
-    HashNode(ring_id_t id, std::size_t hash);
+    HashNode(RingId id, std::size_t label_hash);
 };
 
 class HashRing {
 private:
-    unsigned int n;
-    unsigned int size;
+    int limit;
+    int n;
 
-    std::unordered_map<ring_id_t, Endpoint> endpoints;
+    std::unordered_map<RingId, Endpoint> endpoints;
     std::vector<HashNode> nodes;
 
 public:
     HashRing();
-    HashRing(unsigned int servers_n);
+    HashRing(int limit);
 
 private:
-    unsigned int _find_smallest_bigger(std::size_t hash);
+    int find_smallest_label_hash_bigger(std::size_t id_hash);
 
 public:
-    void add(Endpoint server_endpoint);
-    void remove(Endpoint server_endpoint);
+    int add_endpoint(Endpoint &server_endpoint);
+    int remove_endpoint(Endpoint &server_endpoint);
 
-    Endpoint distribute(Endpoint client_endpoint);
+    const Endpoint &distribute(Endpoint &client_endpoint);
 
-    /*----testing----*/
-    
-    void print_ring();
+    std::vector<Endpoint> get_endpoints();
 };
 
 #endif /* hash_ring.hpp */

@@ -1,15 +1,16 @@
 #include "hash_ring.hpp"
 
-#define MAX_SERVERS_N 1024
-#define REPLICAS_N 2
+#define SERVERS_DEFAULT_LIMIT 4
+#define SERVERS_MAX_LIMIT 1024
+#define REPLICAS_NR 2
 
 
-typedef unsigned long ring_label_t;
+using RingTag = std::uint16_t;
+using RingLabel = RingId;
 
-
-ring_id_t endpoint_to_ring_id(Endpoint endpoint)
+RingId endpoint_to_ring_id(Endpoint endpoint)
 {
-    ring_id_t id;
+    RingId id;
 
     id = endpoint.address;
     id <<= 16;
@@ -18,12 +19,12 @@ ring_id_t endpoint_to_ring_id(Endpoint endpoint)
     return id;
 }
 
-ring_label_t ring_label_from_ring_id(ring_id_t id, uint16_t tag)
+RingLabel ring_id_to_ring_label(RingId id, RingTag tag)
 {
-    return ((ring_id_t)tag << 48) ^ id;
+    return ((RingId)tag << 48) ^ id;
 }
 
-std::size_t ring_label_hash(ring_id_t id)
+std::size_t ring_label_hash(RingLabel id)
 {
     std::size_t ulong_a = id;
 
@@ -35,7 +36,7 @@ std::size_t ring_label_hash(ring_id_t id)
 }
 
 Endpoint::Endpoint(): address(0), port(0) {}
-Endpoint::Endpoint(uint32_t address, uint16_t port): address(address), port(port) {}
+Endpoint::Endpoint(in_addr_t address, in_port_t port): address(address), port(port) {}
 
 bool Endpoint::operator==(const Endpoint &other) const
 {
@@ -54,20 +55,20 @@ std::size_t std::hash<Endpoint>::operator()(const Endpoint &endpoint) const
     return ulong_a;
 }
 
-HashNode::HashNode(ring_id_t id, std::size_t hash): id(id), hash(hash) {}
+HashNode::HashNode(RingId id, std::size_t label_hash): id(id), label_hash(label_hash) {}
 
-HashRing::HashRing(): n(4), size(0) {}
+HashRing::HashRing(): limit(SERVERS_DEFAULT_LIMIT), n(0) {}
 
-HashRing::HashRing(unsigned int servers_n)
+HashRing::HashRing(int limit)
 {
-    if (servers_n > MAX_SERVERS_N)
-        servers_n = MAX_SERVERS_N;
+    if (limit > SERVERS_MAX_LIMIT)
+        limit = SERVERS_MAX_LIMIT;
 
-    this->n = servers_n;
-    this->size = 0;
+    this->limit = limit;
+    this->n = 0;
 }
 
-unsigned int HashRing::_find_smallest_bigger(std::size_t hash)
+int HashRing::find_smallest_label_hash_bigger(std::size_t id_hash)
 {
     int l, m, r;
     std::vector<HashNode> &nodes = this->nodes;
@@ -76,8 +77,8 @@ unsigned int HashRing::_find_smallest_bigger(std::size_t hash)
     r = nodes.size() - 1;
     m = l + ((r - l) / 2);
 
-    while (l < r && nodes[m].hash != hash) {
-        if (nodes[m].hash < hash)
+    while (l < r && nodes[m].label_hash != id_hash) {
+        if (nodes[m].label_hash < id_hash)
             l = m + 1;
         else
             r = m;
@@ -88,43 +89,48 @@ unsigned int HashRing::_find_smallest_bigger(std::size_t hash)
     return m;
 }
 
-void HashRing::add(Endpoint server_endpoint)
+int HashRing::add_endpoint(Endpoint &server_endpoint)
 {
-    ring_id_t id;
+    RingId id;
     auto &endpoints = this->endpoints;
     auto &nodes = this->nodes;
 
-    if (this->size >= this->n)
-        return;
+    if (this->n >= this->limit)
+        return -1;
 
     id = endpoint_to_ring_id(server_endpoint);
 
     if (endpoints.find(id) != endpoints.end())
-        return;
+        return - 1;
 
-    for (unsigned int i = 0; i < REPLICAS_N; ++i) {
-        std::size_t hash = ring_label_hash(ring_label_from_ring_id(id, i));
+    for (int i = 0; i < REPLICAS_NR; ++i) {
+        std::size_t label_hash = ring_label_hash(ring_id_to_ring_label(id, i));
 
-        if (nodes.empty() || hash >= (*(--nodes.end())).hash)
-            nodes.push_back(HashNode(id, hash));
+        if (nodes.empty() || label_hash >= (*(--nodes.end())).label_hash)
+            nodes.push_back(HashNode(id, label_hash));
         else
-            nodes.insert(nodes.begin() + this->_find_smallest_bigger(hash), HashNode(id, hash));
+            nodes.insert(nodes.begin() + this->find_smallest_label_hash_bigger(label_hash), HashNode(id, label_hash));
     }
 
     endpoints[id] = server_endpoint;
 
-    ++this->size;
+    ++this->n;
+
+    return 0;
 }
 
-void HashRing::remove(Endpoint server_endpoint)
+int HashRing::remove_endpoint(Endpoint &server_endpoint)
 {
-    ring_id_t id;
+    RingId id;
     auto endpoints = this->endpoints;
+
+    if (this->n <= 0)
+        return -1;
 
     id = endpoint_to_ring_id(server_endpoint);
 
     if (endpoints.find(id) == endpoints.end())
-        return;
+        return -1;
 
     for (auto iter = nodes.begin(); iter != nodes.end(); ++iter)
         if ((*iter).id == id) {
@@ -134,17 +140,34 @@ void HashRing::remove(Endpoint server_endpoint)
 
     endpoints.erase(id);
 
-    --this->size;
+    --this->n;
+
+    return 0;
 }
 
-Endpoint HashRing::distribute(Endpoint client_endpoint)
+const Endpoint &HashRing::distribute(Endpoint &client_endpoint)
 {
     unsigned int index;
-    ring_id_t id;
+    RingId id;
 
     id = endpoint_to_ring_id(client_endpoint);
 
-    index = this->_find_smallest_bigger(ring_label_hash(ring_label_from_ring_id(id, 0)));
+    index = this->find_smallest_label_hash_bigger(ring_label_hash(ring_id_to_ring_label(id, 0)));
 
     return this->endpoints[this->nodes[index].id];
+}
+
+std::vector<Endpoint> HashRing::get_endpoints()
+{
+    std::vector<Endpoint> endpoints(this->endpoints.size());
+
+    auto vec_iter = endpoints.begin();
+
+    for (auto &[id, endpoint] : this->endpoints) {
+        *vec_iter = endpoint;
+    
+        ++vec_iter;
+    }
+
+    return endpoints;
 }

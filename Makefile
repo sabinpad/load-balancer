@@ -38,15 +38,15 @@ $(MAINOBJECT): $(MAINSOURCE)
 
 $(TESTOBJECTS): $(BUILDDIR)/%.o: $(TESTDIR)/%.cpp
 	mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) -I $(INCLUDEDIR) -c -o $@ $^	
+	$(CXX) $(CXXFLAGS) -I $(INCLUDEDIR) -c -o $@ $^
 
 $(OBJECTS): $(BUILDDIR)/%.o: $(SRCDIR)/%.cpp
 	mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) -I $(INCLUDEDIR) -c -o $@ $^	
+	$(CXX) $(CXXFLAGS) -I $(INCLUDEDIR) -c -o $@ $^
 
 $(LIBOBJECTS): $(BUILDDIR)/%.o: $(LIBDIR)/%.cpp
 	mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) -I $(INCLUDEDIR) -c -o $@ $^	
+	$(CXX) $(CXXFLAGS) -I $(INCLUDEDIR) -c -o $@ $^
 
 clean:
 	rm -rf $(BUILDDIR)

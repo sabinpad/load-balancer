@@ -10,6 +10,8 @@
 #define EVENTS_MAX_NR 32
 #define INPUT_BUFF_MAX_SIZE 32
 
+#define FIXED_UNIX_ADDRESS "loadbalancer"
+
 
 enum class InputToken
 {
@@ -27,7 +29,7 @@ enum InputToken parse_input_buffer(char *buffer)
         return InputToken::ADD;
 
     if (strcmp(buffer, "stop") == 0)
-        return InputToken::ADD;
+        return InputToken::STOP;
 
     if (strcmp(buffer, "add") == 0)
         return InputToken::ADD;
@@ -36,27 +38,14 @@ enum InputToken parse_input_buffer(char *buffer)
         return InputToken::RMV;
 
     if (strcmp(buffer, "list") == 0)
-        return InputToken::ADD;
+        return InputToken::LIST;
 
     return InputToken::NONE;
 }
 
-int check_address_buffer(char *buffer)
-{
-    int bytes;
-    uint32_t address;
+ConnectionEngine::ConnectionEngine() : epoll_fd_(-1), listen_unix_socket_(-1), listen_inet_socket_(-1), servers_limit_(-1) {}
 
-    bytes = sscanf(buffer, "%hhu.%hhu.%hhu.%hhu", (char *)&address + 3, (char *)&address + 2, (char *)&address + 1, (char *)&address);
-
-    if (bytes != 4)
-        return -1;
-
-    return 0;
-}
-
-ConnectionEngine::ConnectionEngine() : epoll_fd(-1), lis_unix_sock(-1), lis_inet_sock(-1) {}
-
-int ConnectionEngine::setup(std::string unix_address, uint32_t inet_address, uint16_t inet_port)
+int ConnectionEngine::setup(in_addr_t inet_address, in_port_t inet_port, int servers_limit)
 {
     int epoll_fd;
     int lis_unix_sock, lis_inet_sock;
@@ -67,7 +56,7 @@ int ConnectionEngine::setup(std::string unix_address, uint32_t inet_address, uin
     if (epoll_fd == -1)
         return -1;
 
-    lis_unix_sock = listening_unix_socket(unix_address, 4);
+    lis_unix_sock = listening_unix_socket(FIXED_UNIX_ADDRESS, 4);
     lis_inet_sock = listening_inet_socket(inet_address, inet_port, 4);
 
     if (lis_unix_sock == -1 || lis_inet_sock == -1) {
@@ -89,13 +78,14 @@ int ConnectionEngine::setup(std::string unix_address, uint32_t inet_address, uin
     event.data.fd = lis_inet_sock;
     epoll_ctl(epoll_fd, EPOLL_CTL_ADD, lis_inet_sock, &event);
 
-    this->epoll_fd = epoll_fd;
-    this->lis_unix_sock = lis_unix_sock;
-    this->lis_inet_sock = lis_inet_sock;
+    this->epoll_fd_ = epoll_fd;
+    this->listen_unix_socket_ = lis_unix_sock;
+    this->listen_inet_socket_ = lis_inet_sock;
+    this->servers_limit_ = servers_limit;
 
     // remove later
-    this->hash_ring.add(Endpoint(ntohl(inet_addr("127.0.0.1")), 8000));
-    this->hash_ring.add(Endpoint(ntohl(inet_addr("127.0.0.1")), 9000));
+    // this->hash_ring.add_endpoint(Endpoint(ntohl(inet_addr("127.0.0.1")), 8000));
+    // this->hash_ring.add(Endpoint(ntohl(inet_addr("127.0.0.1")), 9000));
 
     return 0;
 }
@@ -103,7 +93,7 @@ int ConnectionEngine::setup(std::string unix_address, uint32_t inet_address, uin
 void ConnectionEngine::handle_ctl()
 {
     int rc;
-    int lis_unix_sock = this->lis_unix_sock;
+    int lis_unix_sock = this->listen_unix_socket_;
     int client_sock = -1;
     enum InputToken token;
     char buffer[INPUT_BUFF_MAX_SIZE];
@@ -159,7 +149,7 @@ void ConnectionEngine::handle_ctl()
         if (rc < 1)
             return;
 
-        this->hash_ring.add(Endpoint(ntohl(address), port));
+        // this->hash_ring_.add_endpoint(Endpoint(ntohl(address), port));
 
         inet_ntop(AF_INET, &address, buffer, sizeof(buffer));
 
@@ -198,13 +188,13 @@ void ConnectionEngine::handle_connect()
 
     addr_len = sizeof(addr_info);
 
-    client_fd = accept(this->lis_inet_sock, (sockaddr *)&addr_info, &addr_len);
+    client_fd = accept(this->listen_inet_socket_, (sockaddr *)&addr_info, &addr_len);
     server_fd = socket(AF_INET, SOCK_STREAM, 0);
 
     client_endpoint.address = ntohl(addr_info.sin_addr.s_addr);
     client_endpoint.port = ntohs(addr_info.sin_port);
 
-    server_endpoint = hash_ring.distribute(client_endpoint);
+    server_endpoint = hash_ring_.distribute(client_endpoint);
 
     addr_info.sin_addr.s_addr = htonl(server_endpoint.address);
     addr_info.sin_port = htons(server_endpoint.port);
@@ -224,59 +214,59 @@ void ConnectionEngine::handle_connect()
     flags = fcntl(server_fd, F_GETFL, 0);
     fcntl(server_fd, F_SETFL, flags | O_NONBLOCK);
 
-    this->open_sockets.insert(client_fd);
-    this->open_sockets.insert(server_fd);
+    this->open_sockets_.insert(client_fd);
+    this->open_sockets_.insert(server_fd);
 
-    forward[client_fd] = server_fd;
-    forward[server_fd] = client_fd;
+    forward_[client_fd] = server_fd;
+    forward_[server_fd] = client_fd;
 
     event.events = EPOLLIN;
 
     event.data.fd = client_fd;
-    epoll_ctl(this->epoll_fd, EPOLL_CTL_ADD, client_fd, &event);
+    epoll_ctl(this->epoll_fd_, EPOLL_CTL_ADD, client_fd, &event);
 
     event.data.fd = server_fd;
-    epoll_ctl(this->epoll_fd, EPOLL_CTL_ADD, server_fd, &event);
+    epoll_ctl(this->epoll_fd_, EPOLL_CTL_ADD, server_fd, &event);
 }
 
-void ConnectionEngine::handle_disconnect(int fd)
+void ConnectionEngine::handle_disconnect(int in_sock)
 {
-    int other_fd;
+    int out_sock;
 
-    other_fd = this->forward[fd];
+    out_sock = this->forward_[in_sock];
 
-    epoll_ctl(this->epoll_fd, EPOLL_CTL_DEL, fd, NULL);
-    epoll_ctl(this->epoll_fd, EPOLL_CTL_DEL, other_fd, NULL);
+    epoll_ctl(this->epoll_fd_, EPOLL_CTL_DEL, in_sock, NULL);
+    epoll_ctl(this->epoll_fd_, EPOLL_CTL_DEL, out_sock, NULL);
 
-    this->forward.erase(fd);
-    this->forward.erase(other_fd);
+    this->forward_.erase(in_sock);
+    this->forward_.erase(out_sock);
 
-    this->open_sockets.erase(fd);
-    this->open_sockets.erase(other_fd);
+    this->open_sockets_.erase(in_sock);
+    this->open_sockets_.erase(out_sock);
 
-    close(fd);
-    close(other_fd);
+    close(in_sock);
+    close(out_sock);
 }
 
-void ConnectionEngine::handle_traffic(int in_fd)
+void ConnectionEngine::handle_traffic(int in_sock)
 {
-    int out_fd;
+    int out_sock;
     ssize_t received_n;
     char buff[1024];
 
-    received_n = recv(in_fd, buff, sizeof(buff), 0);
+    received_n = recv(in_sock, buff, sizeof(buff), 0);
 
     if (received_n <= 0) {
-        this->handle_disconnect(in_fd);
+        this->handle_disconnect(in_sock);
 
         return;
     }
 
-    out_fd = forward[in_fd];
+    out_sock = forward_[in_sock];
 
     while (received_n > 0) {
-        send(out_fd, buff, received_n, 0);
-        received_n = recv(in_fd, buff, sizeof(buff), 0);
+        send(out_sock, buff, received_n, 0);
+        received_n = recv(in_sock, buff, sizeof(buff), 0);
     }
 }
 
@@ -286,17 +276,17 @@ void ConnectionEngine::run()
     struct epoll_event events[EVENTS_MAX_NR];
 
     while (alive) {
-        int events_n = epoll_wait(this->epoll_fd, events, EVENTS_MAX_NR, -1);
+        int events_n = epoll_wait(this->epoll_fd_, events, EVENTS_MAX_NR, -1);
 
         for (int i = 0; i < events_n; ++i) {
             int fd = events[i].data.fd;
 
             if (fd == STDIN_FILENO) {
                 alive = false;
-            } else if (fd == this->lis_unix_sock) {
+            } else if (fd == this->listen_unix_socket_) {
                 printf("ctl...\n");
                 this->handle_ctl();
-            } else if (fd == this->lis_inet_sock) {
+            } else if (fd == this->listen_inet_socket_) {
                 printf("connect...\n");
                 this->handle_connect();
             } else {
@@ -309,15 +299,15 @@ void ConnectionEngine::run()
 
 void ConnectionEngine::cleanup()
 {
-    for (auto fd : this->open_sockets) {
-        epoll_ctl(this->epoll_fd, EPOLL_CTL_DEL, fd, NULL);
+    for (auto fd : this->open_sockets_) {
+        epoll_ctl(this->epoll_fd_, EPOLL_CTL_DEL, fd, NULL);
         close(fd);
     }
 
-    epoll_ctl(this->epoll_fd, EPOLL_CTL_DEL, this->lis_inet_sock, NULL);
-    epoll_ctl(this->epoll_fd, EPOLL_CTL_DEL, this->lis_unix_sock, NULL);
+    epoll_ctl(this->epoll_fd_, EPOLL_CTL_DEL, this->listen_inet_socket_, NULL);
+    epoll_ctl(this->epoll_fd_, EPOLL_CTL_DEL, this->listen_unix_socket_, NULL);
 
-    close(this->lis_inet_sock);
-    close(this->lis_unix_sock);
-    close(this->epoll_fd);
+    close(this->listen_inet_socket_);
+    close(this->listen_unix_socket_);
+    close(this->epoll_fd_);
 }

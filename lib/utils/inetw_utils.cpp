@@ -5,7 +5,7 @@
 #include "utils/inetw_utils.hpp"
 
 
-int listening_inet_socket(uint32_t inet_address, uint16_t inet_port, int n)
+int listening_inet_socket(in_addr_t inet_address, in_port_t inet_port, int n)
 {
     int rc;
     int fd = -1;
